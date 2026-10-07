@@ -18,7 +18,6 @@ class DiceScreen extends StatelessWidget {
         child: ModelViewer(
           id: 'dice',
           src: 'assets/dice.glb',
-          // transparent = no dark square around the dice
           backgroundColor: Colors.transparent,
           ar: false,
           autoRotate: false,
@@ -64,7 +63,7 @@ html, body {
 }
 #label {
   position: fixed; left: 0; right: 0; top: 66px; z-index: 3; text-align: center;
-  color: #fff; font-size: 20px; pointer-events: none;
+  color: #fff; font-size: 20px; pointer-events: none; padding: 0 12px;
 }
 /* ---- app bar ---- */
 #bar {
@@ -77,54 +76,49 @@ html, body {
   width: 44px; height: 44px; border: 0; border-radius: 22px; background: transparent;
   display: flex; align-items: center; justify-content: center; cursor: pointer;
 }
+#bar button.cnt { width: auto; padding: 0 12px; gap: 6px; color: #fff; font-size: 19px; font-weight: 700; }
 #bar button:active { background: rgba(255,255,255,.18); }
-/* ---- history panel ---- */
-#panel {
-  position: fixed; top: 60px; right: 8px; width: min(88vw, 330px); max-height: 60vh; z-index: 11;
-  display: none; flex-direction: column; overflow: hidden;
+/* ---- panels ---- */
+#panel, #cpanel {
+  position: fixed; top: 60px; right: 8px; width: min(88vw, 330px); z-index: 11;
+  display: none; overflow: hidden;
   background: rgba(8,38,13,.97); color: #fff; border-radius: 16px;
   box-shadow: 0 8px 28px rgba(0,0,0,.55);
 }
-#panel .ph {
+#panel { max-height: 60vh; flex-direction: column; }
+#panel .ph, #cpanel .ph {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; font-size: 17px; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.15);
 }
-#panel .ph button, .btn {
+#panel .ph button {
   border: 0; border-radius: 16px; padding: 7px 16px; font-size: 14px; cursor: pointer;
   background: rgba(255,255,255,.16); color: #fff;
 }
 #plist { overflow-y: auto; padding: 4px 0; touch-action: pan-y; }
 #plist .row {
-  display: flex; justify-content: space-between; padding: 11px 16px; font-size: 17px;
+  display: flex; justify-content: space-between; gap: 12px; padding: 11px 16px; font-size: 16px;
   border-bottom: 1px solid rgba(255,255,255,.08);
 }
 #plist .row .n { opacity: .6; }
+#plist .row span:last-child { text-align: right; word-break: break-word; }
 #plist .empty { padding: 22px 16px; opacity: .7; text-align: center; font-size: 15px; }
-/* ---- calibration wizard ---- */
-#wiz {
-  position: fixed; left: 10px; right: 10px; bottom: 14px; z-index: 12; display: none;
-  background: rgba(8,38,13,.97); color: #fff; border-radius: 18px; padding: 16px;
-  text-align: center; font-size: 17px; box-shadow: 0 8px 28px rgba(0,0,0,.55);
-}
-#wbtns { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 12px; }
-#wbtns button {
+/* ---- dice count picker ---- */
+#cgrid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 14px; }
+#cgrid button {
   height: 48px; border: 0; border-radius: 12px; font-size: 20px; font-weight: 700;
-  background: #2e7d32; color: #fff; cursor: pointer;
+  background: rgba(255,255,255,.14); color: #fff; cursor: pointer;
 }
-#wbtns button:active { background: #43a047; }
-#wta {
-  display: none; width: 100%; box-sizing: border-box; margin-top: 10px; height: 70px;
-  font-size: 13px; background: #041a08; color: #b9f6ca; border: 0; border-radius: 10px;
-  padding: 8px; user-select: text; -webkit-user-select: text;
-}
-#wact { display: none; margin-top: 10px; gap: 10px; justify-content: center; }
+#cgrid button.sel { background: #43a047; }
+#cgrid button:active { background: #66bb6a; }
 ''';
 
 const String _js = r'''
 (function () {
   // ================== TWEAK THESE ==================
-  var DICE = 2;          // number of dice (2 recommended)
-  var ELEM = 1.0;        // size of each 3D canvas vs screen width
+  var START_COUNT = 2;   // dice at start (1..MAX_DICE)
+  var MAX_DICE = 10;     // maximum number of dice
+  // canvas / dice size for 1..10 dice (index = number of dice). More dice = smaller dice.
+  var SIZES = [0, 1.0, 1.0, 0.9, 0.8, 0.72, 0.66, 0.6, 0.55, 0.5, 0.46];
   var NEAR = 0.84;       // dice size when high up, close to the camera
   var GROUND = 0.21;     // dice size on the ground (smaller = farther away)
   var DICE_HALF = 0.22;  // half width of dice vs screen width at scale 1 (fixes contact size)
@@ -135,24 +129,25 @@ const String _js = r'''
   var EZ = 0.5;          // ground bounce (0..1)
   var EW = 0.6;          // wall bounce (0..1)
   var EC = 0.75;         // dice-vs-dice bounce (0..1)
+  var MU = 0.25;         // dice-vs-dice friction (sideways scrape when they touch)
   var FRICTION = 1500;   // ground friction (px/s^2)
   var DRAG = 0.55;       // air drag
-  var SPIN = 0.8;        // tumble per pixel travelled
+  var SPIN = 0.8;        // rolling: degrees turned per pixel travelled
   var TIMESCALE = 1;     // 0.5 = slow motion
   var MAX_HISTORY = 50;  // how many past rolls to keep
 
-  // [roll, pitch] in degrees that puts each number on TOP.
-  // Run the calibration wizard (sliders icon in the app bar) and paste its result here.
-  var FACES = { 1:[0,0], 2:[0,90], 3:[90,0], 4:[-90,0], 5:[0,-90], 6:[0,180] };
+  // [roll, pitch] in degrees that puts each number on TOP (your calibrated values).
+  var FACES = { 1:[-90,0], 2:[0,0], 3:[0,90], 4:[0,-90], 5:[0,180], 6:[90,0] };
   // =================================================
 
-  var BASE = [[0,0],[0,90],[90,0],[-90,0],[0,-90],[0,180]]; // six orientations used by the wizard
   var ICON_HIST = '<svg viewBox="0 0 24 24" width="26" height="26" fill="#fff"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
-  var ICON_TUNE = '<svg viewBox="0 0 24 24" width="24" height="24" fill="#fff"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>';
+  var ICON_DICE = '<svg viewBox="0 0 24 24" width="24" height="24" fill="#fff"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zM7.5 18a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm0-9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm4.5 4.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm4.5 4.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm0-9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>';
 
   var DT = 1 / 240, NMAX = 240 * 9;
+  var ELEM = SIZES[START_COUNT];
+  var count = START_COUNT;
   var dice = [], act = [], history = [], rollNo = 0;
-  var first, label, bar, panel, wizEl, rolling = false, panelOpen = false, wiz = null, wd = null, W, H;
+  var first, label, bar, panel, cpanel, rolling = false, openId = null, W, H;
 
   function $(id) { return document.getElementById(id); }
   function mk(tag, id, html) {
@@ -167,9 +162,12 @@ const String _js = r'''
   function say(t) { if (label) label.textContent = t; }
 
   // ---------------------------------------------------------------- physics
+  // Each die has: position (x,y), height z, velocity (vx,vy,vz) and angular speeds
+  // wr/wp (tumbling) + wy (spin on the table). On the ground a die ROLLS: its tumble
+  // follows its velocity. In the air it keeps its spin. Collisions change both.
   function simulate(bs) {
     var bd = bounds(), L = bd.L, R = bd.R, T = bd.T, B = bd.B;
-    var m = bs.length, o = [], k, i, p, q;
+    var m = bs.length, o = [], k, i, p, q, it;
     for (k = 0; k < m; k++)
       o.push({ X: [], Y: [], Z: [], AR: [], AP: [], AY: [], PL: [], ar: 0, ap: 0, ay: 0, path: 0 });
 
@@ -181,7 +179,10 @@ const String _js = r'''
           c.z = 0;
           if (Math.abs(c.vz) > 0.35) {
             c.vz = Math.abs(c.vz) * EZ; c.vx *= 0.8; c.vy *= 0.8;
-            a.ay += (Math.random() - 0.5) * 160; a.ap += (Math.random() - 0.5) * 60;
+            // landing on a corner/edge kicks the dice into a new spin
+            c.wy += (Math.random() - 0.5) * 500;
+            c.wr += (Math.random() - 0.5) * 240;
+            c.wp += (Math.random() - 0.5) * 240;
           } else { c.vz = 0; }
         }
         var s0 = Math.sqrt(c.vx * c.vx + c.vy * c.vy);
@@ -191,27 +192,68 @@ const String _js = r'''
         c.x += c.vx * DT; c.y += c.vy * DT;
 
         var r = rad(c.z);
-        if (c.x < L + r) { c.x = L + r; if (c.vx < 0) { c.vx = -c.vx * EW; a.ay += c.vy * 0.05; } }
-        if (c.x > R - r) { c.x = R - r; if (c.vx > 0) { c.vx = -c.vx * EW; a.ay -= c.vy * 0.05; } }
-        if (c.y < T + r) { c.y = T + r; if (c.vy < 0) { c.vy = -c.vy * EW; a.ay += c.vx * 0.05; } }
-        if (c.y > B - r) { c.y = B - r; if (c.vy > 0) { c.vy = -c.vy * EW; a.ay -= c.vx * 0.05; } }
+        if (c.x < L + r) { c.x = L + r; if (c.vx < 0) { c.vx = -c.vx * EW; c.wy += c.vy * 0.4; } }
+        if (c.x > R - r) { c.x = R - r; if (c.vx > 0) { c.vx = -c.vx * EW; c.wy -= c.vy * 0.4; } }
+        if (c.y < T + r) { c.y = T + r; if (c.vy < 0) { c.vy = -c.vy * EW; c.wy += c.vx * 0.4; } }
+        if (c.y > B - r) { c.y = B - r; if (c.vy > 0) { c.vy = -c.vy * EW; c.wy -= c.vx * 0.4; } }
 
-        a.ar += c.vx * DT * SPIN; a.ap += c.vy * DT * SPIN;
+        // angular motion
+        if (c.z === 0 && c.vz === 0) {
+          var kk = Math.min(1, 14 * DT);                 // rolling without slipping
+          c.wr += (c.vx * SPIN - c.wr) * kk;
+          c.wp += (c.vy * SPIN - c.wp) * kk;
+          c.wy *= Math.pow(0.04, DT);                    // table friction slows the spin
+        } else {
+          c.wy *= Math.pow(0.7, DT);                     // air: spin keeps going
+        }
+        a.ar += c.wr * DT; a.ap += c.wp * DT; a.ay += c.wy * DT;
       }
 
-      for (p = 0; p < m; p++) for (q = p + 1; q < m; q++) {
-        var A = bs[p], Bd = bs[q];
-        if (Math.abs(A.z - Bd.z) > 0.3) continue;
-        var dx = Bd.x - A.x, dy = Bd.y - A.y, dist = Math.sqrt(dx * dx + dy * dy);
-        var minD = rad(A.z) + rad(Bd.z);
-        if (dist < minD && dist > 0.001) {
-          var nx = dx / dist, ny = dy / dist, ov = minD - dist;
-          A.x -= nx * ov / 2; A.y -= ny * ov / 2; Bd.x += nx * ov / 2; Bd.y += ny * ov / 2;
-          var rvn = (Bd.vx - A.vx) * nx + (Bd.vy - A.vy) * ny;
-          if (rvn < 0) {
-            var j = -(1 + EC) * rvn / 2;
-            A.vx -= j * nx; A.vy -= j * ny; Bd.vx += j * nx; Bd.vy += j * ny;
-            o[p].ay += (Math.random() - 0.5) * 140; o[q].ay += (Math.random() - 0.5) * 140;
+      // dice vs dice (2 passes per step so stacks of dice separate cleanly)
+      for (it = 0; it < 2; it++) {
+        for (p = 0; p < m; p++) for (q = p + 1; q < m; q++) {
+          var A = bs[p], Bd = bs[q];
+          if (Math.abs(A.z - Bd.z) > 0.3) continue;
+          var dx = Bd.x - A.x, dy = Bd.y - A.y, dist = Math.sqrt(dx * dx + dy * dy);
+          var minD = rad(A.z) + rad(Bd.z);
+          if (dist < minD) {
+            if (dist < 0.001) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; dist = Math.sqrt(dx * dx + dy * dy) || 1; }
+            var nx = dx / dist, ny = dy / dist, ov = minD - dist;
+            A.x -= nx * ov / 2; A.y -= ny * ov / 2; Bd.x += nx * ov / 2; Bd.y += ny * ov / 2;
+            var rvx = Bd.vx - A.vx, rvy = Bd.vy - A.vy, rvn = rvx * nx + rvy * ny;
+           
+            if (rvn < 0) {
+             // NEW: a cube hits with a corner or a flat face, so the push is never perfectly straight
+              var ja = (Math.random() - 0.5) * 0.7;               // about ±20°
+              var inx = nx * Math.cos(ja) - ny * Math.sin(ja);
+              var iny = nx * Math.sin(ja) + ny * Math.cos(ja);
+
+              var j = -(1 + EC) * rvn / 2;                       // bounce (equal mass)
+              var tx = -ny, ty = nx, rvt = rvx * tx + rvy * ty;  // sliding speed along the contact
+              var jt = Math.max(-MU * j, Math.min(MU * j, -rvt / 2)); // friction, capped (Coulomb)
+              var dax = -j * nx - jt * tx, day = -j * ny - jt * ty;
+              var dbx = j * nx + jt * tx, dby = j * ny + jt * ty;
+              A.vx += dax; A.vy += day; Bd.vx += dbx; Bd.vy += dby;
+              // hit = tumble: the impulse also turns the dice, and the scrape makes them spin
+              A.wr += dax * SPIN; A.wp += day * SPIN; Bd.wr += dbx * SPIN; Bd.wp += dby * SPIN;
+              A.wy -= jt * 6; Bd.wy -= jt * 6;
+              A.wy += (Math.random() - 0.5) * 60; Bd.wy += (Math.random() - 0.5) * 60;
+            }
+           
+           //-------------------------------------------------------------------------------------------------
+            // if (rvn < 0) {
+            //   var j = -(1 + EC) * rvn / 2;                       // bounce (equal mass)
+            //   var tx = -ny, ty = nx, rvt = rvx * tx + rvy * ty;  // sliding speed along the contact
+            //   var jt = Math.max(-MU * j, Math.min(MU * j, -rvt / 2)); // friction, capped (Coulomb)
+            //   var dax = -j * nx - jt * tx, day = -j * ny - jt * ty;
+            //   var dbx = j * nx + jt * tx, dby = j * ny + jt * ty;
+            //   A.vx += dax; A.vy += day; Bd.vx += dbx; Bd.vy += dby;
+            //   // hit = tumble: the impulse also turns the dice, and the scrape makes them spin
+            //   A.wr += dax * SPIN; A.wp += day * SPIN; Bd.wr += dbx * SPIN; Bd.wp += dby * SPIN;
+            //   A.wy -= jt * 6; Bd.wy -= jt * 6;
+            //   A.wy += (Math.random() - 0.5) * 60; Bd.wy += (Math.random() - 0.5) * 60;
+            // }
+            //-------------------------------------------------------------------------------------------------
           }
         }
       }
@@ -251,7 +293,7 @@ const String _js = r'''
     } catch (e) { /* a dice that is not ready must never stop the animation */ }
   }
 
-  // ---------------------------------------------------------------- history
+  // ---------------------------------------------------------------- panels
   function renderHistory() {
     var list = $('plist');
     if (!history.length) {
@@ -263,8 +305,20 @@ const String _js = r'''
       return '<div class="row"><span class="n">#' + h.no + '</span><span>' + txt + '</span></div>';
     }).join('');
   }
-  function openPanel() { renderHistory(); panel.style.display = 'flex'; panelOpen = true; }
-  function closePanel() { panel.style.display = 'none'; panelOpen = false; }
+  function markSel() {
+    var bs = $('cgrid').children;
+    for (var i = 0; i < bs.length; i++) bs[i].className = (i + 1 === count) ? 'sel' : '';
+  }
+  function closePanels() {
+    panel.style.display = 'none'; cpanel.style.display = 'none'; openId = null;
+  }
+  function togglePanel(id) {
+    if (openId === id) { closePanels(); return; }
+    closePanels();
+    if (id === 'h') { renderHistory(); panel.style.display = 'flex'; }
+    else { markSel(); cpanel.style.display = 'block'; }
+    openId = id;
+  }
 
   // ------------------------------------------------------------------ throw
   function throwDice(bs) {
@@ -296,23 +350,26 @@ const String _js = r'''
         rollNo++;
         history.unshift({ no: rollNo, vals: vals.slice(), sum: sum });
         if (history.length > MAX_HISTORY) history.pop();
-        if (panelOpen) renderHistory();
-        say(act.length > 1
-          ? 'You rolled ' + vals.join(' + ') + ' = ' + sum + '  |  tap to throw again'
-          : 'You rolled a ' + sum + '  |  tap to throw again');
+        if (openId === 'h') renderHistory();
+        if (act.length === 1) say('You rolled a ' + sum + '  |  tap to throw again');
+        else if (act.length <= 3) say('You rolled ' + vals.join(' + ') + ' = ' + sum + '  |  tap to throw again');
+        else say('Total ' + sum + ' (' + vals.join(', ') + ')  |  tap to throw again');
       }
     }
     requestAnimationFrame(frame);
   }
 
   function autoThrow() {
-    var b = bounds(), r0 = rad(START_Z), span = b.R - b.L - 2 * r0, base = Math.random() * span, bs = [];
-    for (var k = 0; k < act.length; k++) {
+    var b = bounds(), r0 = rad(START_Z), span = b.R - b.L - 2 * r0, m = act.length, bs = [];
+    for (var k = 0; k < m; k++) {
       var a = (Math.random() * 100 - 50) * Math.PI / 180, sp = 1300 + Math.random() * 1700;
+      var vx = sp * Math.sin(a), vy = -sp * Math.cos(a);
       bs.push({
-        x: b.L + r0 + ((base + k * span / act.length) % span),
-        y: b.B - r0 - 20, z: START_Z,
-        vx: sp * Math.sin(a), vy: -sp * Math.cos(a), vz: 0.9 + Math.random() * 1.3
+        x: b.L + r0 + span * (k + 0.5) / m + (Math.random() - 0.5) * 20,
+        y: b.B - r0 - 20 - Math.random() * 30,
+        z: START_Z - 0.05 * (k % 4),                       // different heights = no overlap at start
+        vx: vx, vy: vy, vz: 0.9 + Math.random() * 1.3,
+        wr: vx * SPIN, wp: vy * SPIN, wy: (Math.random() - 0.5) * 400
       });
     }
     throwDice(bs);
@@ -320,92 +377,14 @@ const String _js = r'''
 
   function onDown(e) {
     var t = e.target;
-    if (t && t.closest && t.closest('#bar, #panel, #wiz')) return; // taps on the UI
-    if (panelOpen) { closePanel(); return; }
-    if (wiz || rolling) return;
+    if (t && t.closest && t.closest('#bar, #panel, #cpanel')) return; // taps on the UI
+    if (openId) { closePanels(); return; }
+    if (rolling) return;
     W = window.innerWidth; H = window.innerHeight;
-    act = dice.filter(function (d) { return d.ok && d.ready; });
+    act = dice.filter(function (d) { return d.ok && d.ready && d.idx < count; });
     if (!act.length) { say('Loading dice...'); return; }
     try { autoThrow(); }
     catch (err) { rolling = false; say('ERROR: ' + err.message); }
-  }
-
-  // ------------------------------------------------------ calibration wizard
-  function wizShow(msg) {
-    var b = BASE[wiz.i], bd = bounds();
-    setOri(wd, b[0], b[1], 0);
-    place(wd, 0, (bd.T + bd.B) / 2 - 60, 0.55);
-    $('wtxt').innerHTML = (msg || '') + '<b>Step ' + (wiz.i + 1) + ' of 6</b><br>' +
-      'Which number is on the <b>TOP</b> of the dice (the face pointing at you)?';
-  }
-
-  function restoreDice() {
-    dice.forEach(function (d) {
-      d.el.style.visibility = 'visible'; d.sh.style.visibility = 'visible';
-      var s = restSpot(d); place(d, s.x, s.y, 0);
-      if (d.ready) { var f = FACES[rnd(6)]; setOri(d, f[0], f[1], Math.random() * 360); }
-    });
-  }
-
-  function startWizard() {
-    if (rolling || wiz) return;
-    W = window.innerWidth; H = window.innerHeight;
-    var ready = dice.filter(function (d) { return d.ok && d.ready; });
-    if (!ready.length) { say('Loading dice...'); return; }
-    closePanel();
-    wd = ready[0];
-    dice.forEach(function (d) { d.el.style.visibility = 'hidden'; d.sh.style.visibility = 'hidden'; });
-    wd.el.style.visibility = 'visible'; wd.sh.style.visibility = 'visible';
-    wiz = { i: 0, ans: [] };
-    $('wbtns').style.display = 'grid';
-    $('wta').style.display = 'none'; $('wact').style.display = 'none';
-    wizEl.style.display = 'block';
-    say('');
-    wizShow('');
-  }
-
-  function wizAnswer(n) {
-    if (!wiz || wiz.done) return;
-    wiz.ans.push(n); wiz.i++;
-    if (wiz.i < 6) { wizShow(''); return; }
-
-    var seen = {}, ok = true;
-    wiz.ans.forEach(function (a) { if (seen[a]) ok = false; seen[a] = 1; });
-    if (!ok) {
-      wiz.i = 0; wiz.ans = [];
-      wizShow('<span style="color:#ffab91">Two answers were the same - let\'s try again.</span><br>');
-      return;
-    }
-    var nf = {};
-    for (var j = 0; j < 6; j++) nf[wiz.ans[j]] = BASE[j];
-    FACES = nf;
-    var line = 'var FACES = { ' + [1, 2, 3, 4, 5, 6].map(function (n) {
-      return n + ':[' + FACES[n][0] + ',' + FACES[n][1] + ']';
-    }).join(', ') + ' };';
-
-    wiz.done = true;
-    $('wbtns').style.display = 'none';
-    $('wtxt').innerHTML = '<b>Done!</b> The numbers now match the top face.<br>' +
-      '<span style="font-size:14px;opacity:.85">To keep this after restarting the app, replace the FACES line in the code with:</span>';
-    var ta = $('wta'); ta.value = line; ta.style.display = 'block';
-    $('wact').style.display = 'flex';
-  }
-
-  function wizClose() {
-    wizEl.style.display = 'none';
-    wiz = null; wd = null;
-    restoreDice();
-    statusText();
-  }
-
-  function copyLine() {
-    var ta = $('wta');
-    ta.select();
-    try {
-      if (navigator.clipboard) navigator.clipboard.writeText(ta.value);
-      else document.execCommand('copy');
-    } catch (e) { try { document.execCommand('copy'); } catch (e2) { /* select-only fallback */ } }
-    $('copyBtn').textContent = 'Copied!';
   }
 
   // ---------------------------------------------------------------- set up
@@ -419,34 +398,39 @@ const String _js = r'''
       x = b.L + r + Math.random() * (b.R - b.L - 2 * r);
       y = b.T + r + Math.random() * (b.B - b.T - 2 * r);
       t++;
-    } while (t < 30 && dice.some(function (q) {
-      return q !== self && q.x !== undefined && Math.hypot(q.x - x, q.y - y) < r * 2.4;
+    } while (t < 60 && dice.some(function (q) {
+      return q !== self && q.x !== undefined && Math.hypot(q.x - x, q.y - y) < r * 2.2;
     }));
     return { x: x, y: y };
   }
 
   function statusText() {
-    if (wiz) return;
-    var loadedCount = dice.filter(function (d) { return d.ready; }).length;
-    var alive = dice.filter(function (d) { return d.ok; }).length;
-    say(loadedCount < alive ? 'Loading dice ' + loadedCount + '/' + alive + '...' : 'Tap to throw the dice');
+    var shown = dice.filter(function (d) { return d.ok && d.idx < count; });
+    var loadedCount = shown.filter(function (d) { return d.ready; }).length;
+    if (shown.length < count && loadedCount === shown.length && dice.length < count) { say('Loading dice...'); return; }
+    say(loadedCount < shown.length ? 'Loading dice ' + loadedCount + '/' + shown.length + '...' : 'Tap to throw the dice');
+  }
+
+  function styleDie(d) {
+    var e = d.el;
+    e.style.setProperty('width', (ELEM * 100) + 'vw', 'important');
+    e.style.setProperty('height', (ELEM * 100) + 'vw', 'important');
+    e.style.setProperty('left', (-(ELEM - 1) * 50) + 'vw', 'important');
+    e.style.setProperty('margin-top', (-ELEM * 50) + 'vw', 'important');
+    var sw = W * DICE_HALF * ELEM * 2 * GROUND * 1.15;
+    d.sh.style.width = sw + 'px'; d.sh.style.height = sw + 'px';
   }
 
   function addDie(e) {
     e.classList.add('die');
     e.setAttribute('loading', 'eager');
-    e.style.setProperty('width', (ELEM * 100) + 'vw', 'important');
-    e.style.setProperty('height', (ELEM * 100) + 'vw', 'important');
-    e.style.setProperty('left', (-(ELEM - 1) * 50) + 'vw', 'important');
-    e.style.setProperty('margin-top', (-ELEM * 50) + 'vw', 'important');
 
     var sh = mk('div'); sh.className = 'shadow';
-    var sw = W * DICE_HALF * ELEM * 2 * GROUND * 1.15;
-    sh.style.width = sw + 'px'; sh.style.height = sw + 'px';
     document.body.appendChild(sh);
 
-    var d = { el: e, sh: sh, ok: true, ready: false };
+    var d = { el: e, sh: sh, ok: true, ready: false, idx: dice.length };
     dice.push(d);
+    styleDie(d);
     var spot = restSpot(d);
     place(d, spot.x, spot.y, 0);
 
@@ -467,13 +451,43 @@ const String _js = r'''
     say('One dice could not load - continuing with the others');
   }
 
+  function spawn() {
+    var c = first.cloneNode(true);
+    c.id = 'dice' + (dice.length + 1);
+    first.parentNode.appendChild(c);
+    var d = addDie(c);
+    d.el.addEventListener('error', function () { fail(d); });
+    setTimeout(function () { fail(d); }, 15000);
+    return d;
+  }
+
+  // change how many dice are on the table
+  function setCount(n) {
+    count = Math.max(1, Math.min(MAX_DICE, n));
+    ELEM = SIZES[count];
+    W = window.innerWidth; H = window.innerHeight;
+    while (dice.length < count) spawn();
+    dice.forEach(function (d, i) {
+      var on = i < count && d.ok;
+      d.el.style.display = on ? '' : 'none';
+      d.sh.style.display = on ? '' : 'none';
+      d.x = undefined;
+      if (on) styleDie(d);
+    });
+    dice.forEach(function (d, i) {
+      if (i < count && d.ok) { var s = restSpot(d); place(d, s.x, s.y, 0); }
+    });
+    $('cnt').textContent = count;
+    statusText();
+  }
+
   function buildUI() {
     label = mk('div', 'label', 'Loading dice...');
     document.body.appendChild(label);
 
     bar = mk('div', 'bar',
       '<div class="title">Dice Roll</div>' +
-      '<button id="calBtn" title="Calibrate faces">' + ICON_TUNE + '</button>' +
+      '<button id="cntBtn" class="cnt" title="Number of dice">' + ICON_DICE + '<span id="cnt">' + count + '</span></button>' +
       '<button id="histBtn" title="Roll history">' + ICON_HIST + '</button>');
     document.body.appendChild(bar);
 
@@ -481,25 +495,25 @@ const String _js = r'''
       '<div class="ph"><span>Roll history</span><button id="clrBtn">Clear</button></div><div id="plist"></div>');
     document.body.appendChild(panel);
 
-    wizEl = mk('div', 'wiz',
-      '<div id="wtxt"></div><div id="wbtns"></div><textarea id="wta" readonly></textarea>' +
-      '<div id="wact"><button class="btn" id="copyBtn">Copy</button>' +
-      '<button class="btn" id="doneBtn" style="background:#2e7d32">Done</button></div>');
-    document.body.appendChild(wizEl);
+    cpanel = mk('div', 'cpanel',
+      '<div class="ph"><span>Number of dice</span></div><div id="cgrid"></div>');
+    document.body.appendChild(cpanel);
 
-    var wb = $('wbtns');
-    for (var n = 1; n <= 6; n++) {
+    var grid = $('cgrid');
+    for (var n = 1; n <= MAX_DICE; n++) {
       var b = mk('button', null, String(n));
       b.setAttribute('data-n', n);
-      b.addEventListener('click', function () { wizAnswer(parseInt(this.getAttribute('data-n'), 10)); });
-      wb.appendChild(b);
+      b.addEventListener('click', function () {
+        if (rolling) return;
+        setCount(parseInt(this.getAttribute('data-n'), 10));
+        closePanels();
+      });
+      grid.appendChild(b);
     }
 
-    $('histBtn').addEventListener('click', function () { panelOpen ? closePanel() : openPanel(); });
+    $('histBtn').addEventListener('click', function () { togglePanel('h'); });
+    $('cntBtn').addEventListener('click', function () { togglePanel('c'); });
     $('clrBtn').addEventListener('click', function () { history = []; rollNo = 0; renderHistory(); });
-    $('calBtn').addEventListener('click', startWizard);
-    $('copyBtn').addEventListener('click', copyLine);
-    $('doneBtn').addEventListener('click', wizClose);
   }
 
   function start() {
@@ -513,19 +527,7 @@ const String _js = r'''
     addDie(first);
 
     // create the extra dice only AFTER the first one has fully loaded
-    whenLoaded(first, function () {
-      for (var k = 1; k < DICE; k++) {
-        var c = first.cloneNode(true);
-        c.id = 'dice' + (k + 1);
-        first.parentNode.appendChild(c);
-        var d = addDie(c);
-        (function (dd) {
-          dd.el.addEventListener('error', function () { fail(dd); });
-          setTimeout(function () { fail(dd); }, 8000);
-        })(d);
-      }
-      statusText();
-    });
+    whenLoaded(first, function () { setCount(count); });
 
     window.addEventListener('pointerdown', onDown);
   }
